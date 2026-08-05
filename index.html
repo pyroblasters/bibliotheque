@@ -235,6 +235,7 @@
   .ac-item-info{ min-width:0; flex:1; }
   .ac-item-title{ font-size:13px; font-weight:600; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .ac-item-author{ font-size:11.5px; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ac-empty{ padding:10px 12px; font-size:12.5px; color:var(--ink-soft); }
 
   /* Series grouping */
   .series-card{
@@ -726,29 +727,49 @@
   }
 
   // ---------- Autocomplétion (suggestions pendant la saisie du titre) ----------
+  function mapGoogleItems(data){
+    if (!data || !data.items) return [];
+    return data.items.map(function(item){
+      var info = item.volumeInfo || {};
+      var isbn = "";
+      if (info.industryIdentifiers){
+        var pick = info.industryIdentifiers.find(function(x){ return x.type === "ISBN_13"; }) ||
+                   info.industryIdentifiers.find(function(x){ return x.type === "ISBN_10"; });
+        if (pick) isbn = pick.identifier;
+      }
+      var cover = info.imageLinks ? (info.imageLinks.thumbnail || info.imageLinks.smallThumbnail || "").replace("http://","https://") : "";
+      return {
+        title: info.title || "",
+        author: (info.authors || []).join(", "),
+        isbn: normalizeIsbn(isbn),
+        cover: cover
+      };
+    }).filter(function(b){ return b.title; });
+  }
+
+  function mapOpenLibraryDocs(data){
+    if (!data || !data.docs) return [];
+    return data.docs.map(function(d){
+      var cover = d.cover_i ? ("https://covers.openlibrary.org/b/id/" + d.cover_i + "-M.jpg") : "";
+      var isbn = (d.isbn && d.isbn.length) ? d.isbn[0] : "";
+      return {
+        title: d.title || "",
+        author: (d.author_name || []).join(", "),
+        isbn: normalizeIsbn(isbn),
+        cover: cover
+      };
+    }).filter(function(b){ return b.title; });
+  }
+
   function searchBookSuggestions(query){
     return fetch("https://www.googleapis.com/books/v1/volumes?q=" + encodeURIComponent(query) + "&maxResults=5")
-      .then(function(r){ return r.json(); })
-      .then(function(data){
-        if (!data || !data.items) return [];
-        return data.items.map(function(item){
-          var info = item.volumeInfo || {};
-          var isbn = "";
-          if (info.industryIdentifiers){
-            var pick = info.industryIdentifiers.find(function(x){ return x.type === "ISBN_13"; }) ||
-                       info.industryIdentifiers.find(function(x){ return x.type === "ISBN_10"; });
-            if (pick) isbn = pick.identifier;
-          }
-          var cover = info.imageLinks ? (info.imageLinks.thumbnail || info.imageLinks.smallThumbnail || "").replace("http://","https://") : "";
-          return {
-            title: info.title || "",
-            author: (info.authors || []).join(", "),
-            isbn: normalizeIsbn(isbn),
-            cover: cover
-          };
-        }).filter(function(b){ return b.title; });
-      })
-      .catch(function(){ return []; });
+      .then(function(r){ if (!r.ok) throw new Error("google_http_" + r.status); return r.json(); })
+      .then(mapGoogleItems)
+      .catch(function(){
+        return fetch("https://openlibrary.org/search.json?q=" + encodeURIComponent(query) + "&limit=5")
+          .then(function(r){ if (!r.ok) throw new Error("ol_http_" + r.status); return r.json(); })
+          .then(mapOpenLibraryDocs);
+      });
   }
 
   function attachAutocomplete(inputEl, onSelect){
@@ -771,10 +792,15 @@
         dropdown.innerHTML = "";
         return;
       }
+      renderMessage("Recherche…");
       debounceTimer = setTimeout(function(){
         searchBookSuggestions(q).then(function(results){
           if (currentQuery !== q) return;
+          if (!results.length){ renderMessage("Aucun résultat trouvé."); return; }
           renderDropdown(results);
+        }).catch(function(){
+          if (currentQuery !== q) return;
+          renderMessage("Recherche indisponible pour l'instant.");
         });
       }, 400);
     });
@@ -785,9 +811,17 @@
       if (dropdown.children.length) dropdown.hidden = false;
     });
 
+    function renderMessage(text){
+      dropdown.innerHTML = "";
+      var msg = document.createElement("div");
+      msg.className = "ac-empty";
+      msg.textContent = text;
+      dropdown.appendChild(msg);
+      dropdown.hidden = false;
+    }
+
     function renderDropdown(results){
       dropdown.innerHTML = "";
-      if (!results.length){ dropdown.hidden = true; return; }
       results.forEach(function(r){
         var item = document.createElement("div");
         item.className = "ac-item";
@@ -798,7 +832,7 @@
         var a = document.createElement("div"); a.className = "ac-item-author"; a.textContent = r.author || "Auteur inconnu";
         info.appendChild(t); info.appendChild(a);
         item.appendChild(info);
-        item.addEventListener("mousedown", function(e){
+        item.addEventListener("pointerdown", function(e){
           e.preventDefault();
           onSelect(r);
           dropdown.hidden = true;
