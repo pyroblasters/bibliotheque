@@ -223,6 +223,7 @@
     position:absolute; left:0; right:0; top:100%; margin-top:4px;
     background:var(--card); border:1px solid var(--line); border-radius:8px;
     box-shadow:var(--shadow); max-height:260px; overflow-y:auto; z-index:50;
+    -webkit-overflow-scrolling:touch;
   }
   .ac-dropdown[hidden]{ display:none; }
   .ac-item{
@@ -804,11 +805,12 @@
         });
       }, 400);
     });
-    inputEl.addEventListener("blur", function(){
-      setTimeout(function(){ dropdown.hidden = true; }, 150);
-    });
     inputEl.addEventListener("focus", function(){
       if (dropdown.children.length) dropdown.hidden = false;
+    });
+    document.addEventListener("click", function(e){
+      if (e.target === inputEl || dropdown.contains(e.target)) return;
+      dropdown.hidden = true;
     });
 
     function renderMessage(text){
@@ -832,8 +834,7 @@
         var a = document.createElement("div"); a.className = "ac-item-author"; a.textContent = r.author || "Auteur inconnu";
         info.appendChild(t); info.appendChild(a);
         item.appendChild(info);
-        item.addEventListener("pointerdown", function(e){
-          e.preventDefault();
+        item.addEventListener("click", function(){
           onSelect(r);
           dropdown.hidden = true;
         });
