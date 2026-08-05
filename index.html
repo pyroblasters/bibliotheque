@@ -17,6 +17,7 @@
     --moss-bg:#E1E8DA;
     --stamp:#A5382A;
     --brass:#A07A2E;
+    --brass-bg:#F1E7CE;
     --line:#D2C9AE;
     --line-soft:#E3DCC6;
     --radius:10px;
@@ -96,12 +97,17 @@
     position:absolute; left:10px; top:50%; transform:translateY(-50%);
     width:15px; height:15px; color:var(--ink-soft);
   }
-  .chips{ display:flex; gap:8px; }
+  .chips-row{ display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+  .chips{ display:flex; gap:6px; flex-wrap:wrap; }
   .chip{
-    padding:6px 13px; border-radius:20px; border:1px solid var(--line);
-    background:transparent; font-size:12.5px; color:var(--ink-soft); font-weight:600;
+    padding:6px 11px; border-radius:20px; border:1px solid var(--line);
+    background:transparent; font-size:12px; color:var(--ink-soft); font-weight:600; white-space:nowrap;
   }
   .chip.active{ background:var(--ink); color:var(--card); border-color:var(--ink); }
+  .sort-select{
+    padding:6px 10px; border-radius:20px; border:1px solid var(--line);
+    background:var(--card); font-size:12px; color:var(--ink-soft); font-weight:600; font-family:inherit;
+  }
 
   /* ---------- List ---------- */
   #book-list{ padding:12px 18px 40px; display:flex; flex-direction:column; gap:10px; }
@@ -112,6 +118,7 @@
     position:relative;
   }
   .row.is-read{ border-left-color:var(--moss); }
+  .row.is-reading{ border-left-color:var(--brass); }
   .cover{
     width:44px; height:64px; border-radius:4px; flex-shrink:0; overflow:hidden;
     background:var(--ink-soft); display:flex; align-items:center; justify-content:center;
@@ -129,6 +136,11 @@
     border:1px solid var(--line); background:transparent; color:var(--ink-soft); white-space:nowrap;
   }
   .tag-btn.read{ background:var(--moss-bg); color:var(--moss); border-color:var(--moss-bg); }
+  .tag-btn.reading{ background:var(--brass-bg); color:var(--brass); border-color:var(--brass-bg); }
+  .loan-badge{
+    display:inline-block; margin-top:3px; font-size:10.5px; font-weight:700; letter-spacing:0.3px;
+    color:var(--brass); background:var(--brass-bg); padding:2px 8px; border-radius:10px; width:fit-content;
+  }
   .row-actions-icons{ display:flex; gap:8px; align-items:center; }
   .icon-btn{
     border:none; background:none; color:var(--ink-soft); padding:4px; opacity:0.55;
@@ -189,9 +201,10 @@
     display:flex; border:1px solid var(--line); border-radius:20px; overflow:hidden; width:fit-content;
   }
   .read-switch button{
-    border:none; background:var(--paper); padding:6px 14px; font-size:12px; font-weight:600; color:var(--ink-soft);
+    border:none; background:var(--paper); padding:6px 11px; font-size:11.5px; font-weight:600; color:var(--ink-soft); white-space:nowrap;
   }
   .read-switch button.active{ background:var(--moss); color:#fff; }
+  .read-switch button.active[data-val="reading"]{ background:var(--brass); }
 
   /* Stamp */
   .stamp-wrap{ display:flex; flex-direction:column; align-items:center; padding:30px 10px 10px; }
@@ -304,10 +317,18 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
     <input type="text" id="search" placeholder="Rechercher un titre ou un auteur…">
   </div>
-  <div class="chips">
-    <button class="chip active" data-filter="all">Tous</button>
-    <button class="chip" data-filter="unread">Non lus</button>
-    <button class="chip" data-filter="read">Lus</button>
+  <div class="chips-row">
+    <div class="chips">
+      <button class="chip active" data-filter="all">Tous</button>
+      <button class="chip" data-filter="unread">À lire</button>
+      <button class="chip" data-filter="reading">En cours</button>
+      <button class="chip" data-filter="read">Lus</button>
+    </div>
+    <select class="sort-select" id="sort-select">
+      <option value="recent">Plus récents</option>
+      <option value="title">Titre A→Z</option>
+      <option value="author">Auteur A→Z</option>
+    </select>
   </div>
 </div>
 
@@ -353,9 +374,14 @@
     <div class="form-field">
       <label>Statut de lecture</label>
       <div class="read-switch" id="m-read-switch">
-        <button type="button" data-val="0" class="active">Non lu</button>
-        <button type="button" data-val="1">Lu</button>
+        <button type="button" data-val="unread" class="active">Non lu</button>
+        <button type="button" data-val="reading">En cours</button>
+        <button type="button" data-val="read">Lu</button>
       </div>
+    </div>
+    <div class="form-field">
+      <label for="m-loan">Prêté à (optionnel)</label>
+      <input type="text" id="m-loan" placeholder="Laisse vide si le livre est chez toi">
     </div>
     <button class="btn primary" id="m-save" style="width:100%; margin-top:6px;">Ajouter à ma bibliothèque</button>
   </div>
@@ -375,8 +401,9 @@
   var books = [];
   var filterState = "all";
   var searchState = "";
+  var sortState = "recent";
   var quaggaRunning = false;
-  var pendingManualRead = 0;
+  var pendingManualStatus = "unread";
   var lastCodes = [];
   var expandedSeries = new Set();
   var manualSelectedCover = "";
@@ -398,6 +425,10 @@
       })
       .then(function(data){
         books = Array.isArray(data) ? data : [];
+        books.forEach(function(b){
+          if (!b.status) b.status = b.read ? "read" : "unread";
+          if (typeof b.loanedTo !== "string") b.loanedTo = "";
+        });
         renderAll();
       })
       .catch(function(){
@@ -424,7 +455,7 @@
 
   function renderStats(){
     var total = books.length;
-    var read = books.filter(function(b){ return b.read; }).length;
+    var read = books.filter(function(b){ return b.status === "read"; }).length;
     var pct = total ? Math.round((read/total)*100) : 0;
     document.getElementById("stat-total").textContent = total;
     document.getElementById("stat-read").textContent = read;
@@ -452,10 +483,31 @@
     return wrap;
   }
 
+  function statusLabel(status){
+    if (status === "reading") return "EN COURS";
+    if (status === "read") return "LU";
+    return "NON LU";
+  }
+  function statusClass(status){
+    if (status === "reading") return " reading";
+    if (status === "read") return " read";
+    return "";
+  }
+  function nextStatus(status){
+    if (status === "unread") return "reading";
+    if (status === "reading") return "read";
+    return "unread";
+  }
+  function rowStatusClass(status){
+    if (status === "read") return " is-read";
+    if (status === "reading") return " is-reading";
+    return "";
+  }
+
   function makeRow(book, opts){
     opts = opts || {};
     var row = document.createElement("div");
-    row.className = "row" + (book.read ? " is-read" : "");
+    row.className = "row" + rowStatusClass(book.status);
     row.appendChild(coverEl(book));
 
     var info = document.createElement("div");
@@ -467,15 +519,19 @@
       var isbnEl = document.createElement("div"); isbnEl.className = "row-isbn mono"; isbnEl.textContent = book.isbn;
       info.appendChild(isbnEl);
     }
+    if (book.loanedTo){
+      var loanEl = document.createElement("div"); loanEl.className = "loan-badge"; loanEl.textContent = "Prêté à " + book.loanedTo;
+      info.appendChild(loanEl);
+    }
     row.appendChild(info);
 
     var actions = document.createElement("div");
     actions.className = "row-actions";
     var tag = document.createElement("button");
-    tag.className = "tag-btn" + (book.read ? " read" : "");
-    tag.textContent = book.read ? "LU" : "NON LU";
+    tag.className = "tag-btn" + statusClass(book.status);
+    tag.textContent = statusLabel(book.status);
     tag.addEventListener("click", function(){
-      book.read = !book.read;
+      book.status = nextStatus(book.status);
       saveLibrary();
       renderAll();
     });
@@ -541,7 +597,7 @@
   function makeSeriesCard(entry){
     var card = document.createElement("div");
     card.className = "series-card";
-    var readCount = entry.items.filter(function(it){ return it.book.read; }).length;
+    var readCount = entry.items.filter(function(it){ return it.book.status === "read"; }).length;
     var isOpen = expandedSeries.has(entry.key);
 
     var header = document.createElement("button");
@@ -604,25 +660,53 @@
     standalone.forEach(function(book){
       entries.push({ type: "book", book: book, sortKey: book.addedAt || 0 });
     });
-    entries.sort(function(a,b){ return b.sortKey - a.sortKey; });
+    entries.forEach(function(entry){
+      if (entry.type === "book"){
+        entry.sortTitle = entry.book.title || "";
+        entry.sortAuthor = entry.book.author || "";
+      } else {
+        entry.sortTitle = entry.label || "";
+        entry.sortAuthor = (entry.items[0] && entry.items[0].book.author) || "";
+      }
+    });
+    entries.sort(compareEntries);
 
     entries.forEach(function(entry){
       list.appendChild(entry.type === "book" ? makeRow(entry.book) : makeSeriesCard(entry));
     });
   }
 
+  function compareEntries(a, b){
+    if (sortState === "title"){
+      return a.sortTitle.localeCompare(b.sortTitle, "fr", { sensitivity: "base" });
+    }
+    if (sortState === "author"){
+      var cmp = a.sortAuthor.localeCompare(b.sortAuthor, "fr", { sensitivity: "base" });
+      return cmp !== 0 ? cmp : a.sortTitle.localeCompare(b.sortTitle, "fr", { sensitivity: "base" });
+    }
+    return b.sortKey - a.sortKey;
+  }
+
   function renderList(){
     var list = document.getElementById("book-list");
     list.innerHTML = "";
     var filtered = books.filter(function(b){
-      if (filterState === "read" && !b.read) return false;
-      if (filterState === "unread" && b.read) return false;
+      if (filterState === "read" && b.status !== "read") return false;
+      if (filterState === "unread" && b.status !== "unread") return false;
+      if (filterState === "reading" && b.status !== "reading") return false;
       if (searchState){
-        var hay = ((b.title||"") + " " + (b.author||"")).toLowerCase();
+        var hay = ((b.title||"") + " " + (b.author||"") + " " + (b.loanedTo||"")).toLowerCase();
         if (hay.indexOf(searchState) === -1) return false;
       }
       return true;
-    }).sort(function(a,b){ return (b.addedAt||0) - (a.addedAt||0); });
+    }).sort(function(a,b){
+      if (sortState === "title") return (a.title||"").localeCompare(b.title||"", "fr", { sensitivity: "base" });
+      if (sortState === "author"){
+        var cmp = (a.author||"").localeCompare(b.author||"", "fr", { sensitivity: "base" });
+        return cmp !== 0 ? cmp : (a.title||"").localeCompare(b.title||"", "fr", { sensitivity: "base" });
+      }
+      return (b.addedAt||0) - (a.addedAt||0);
+    });
 
     if (!books.length){
       list.innerHTML = '<div class="empty"><span class="serif">Ta bibliothèque est vide</span>Scanne ou ajoute ton premier livre pour commencer ton catalogue.</div>';
@@ -659,6 +743,10 @@
       filterState = chip.getAttribute("data-filter");
       renderList();
     });
+  });
+  document.getElementById("sort-select").addEventListener("change", function(e){
+    sortState = e.target.value;
+    renderList();
   });
   document.getElementById("search").addEventListener("input", function(e){
     searchState = e.target.value.trim().toLowerCase();
@@ -965,7 +1053,7 @@
       (found ? "" : '<div style="font-size:12px;color:var(--ink-soft);margin-bottom:2px;">Livre non trouvé automatiquement — tape le titre pour voir des suggestions.</div>') +
       '<div><span class="field-label">Titre</span><input class="field-input" id="ac-title" value="' + escapeHtml(title) + '"></div>' +
       '<div><span class="field-label">Auteur</span><input class="field-input" id="ac-author" value="' + escapeHtml(author) + '"></div>' +
-      '<div class="read-toggle-row"><div class="read-switch" id="ac-read-switch"><button type="button" data-val="0" class="active">Non lu</button><button type="button" data-val="1">Lu</button></div></div>';
+      '<div class="read-toggle-row"><div class="read-switch" id="ac-read-switch"><button type="button" data-val="unread" class="active">Non lu</button><button type="button" data-val="reading">En cours</button><button type="button" data-val="read">Lu</button></div></div>';
     card.appendChild(fields);
     scanResultEl.appendChild(card);
 
@@ -980,13 +1068,13 @@
       }
     });
 
-    var readVal = 0;
+    var readVal = "unread";
     var switchEl = document.getElementById("ac-read-switch");
     switchEl.querySelectorAll("button").forEach(function(btn){
       btn.addEventListener("click", function(){
         switchEl.querySelectorAll("button").forEach(function(b){ b.classList.remove("active"); });
         btn.classList.add("active");
-        readVal = parseInt(btn.getAttribute("data-val"), 10);
+        readVal = btn.getAttribute("data-val");
       });
     });
 
@@ -1003,7 +1091,8 @@
         title: document.getElementById("ac-title").value.trim() || "Sans titre",
         author: document.getElementById("ac-author").value.trim(),
         cover: cover,
-        read: !!readVal,
+        status: readVal,
+        loanedTo: "",
         addedAt: Date.now()
       };
       books.push(newBook);
@@ -1023,9 +1112,12 @@
     document.getElementById("m-title").value = "";
     document.getElementById("m-author").value = "";
     document.getElementById("m-isbn").value = "";
+    document.getElementById("m-loan").value = "";
     manualSelectedCover = "";
-    pendingManualRead = 0;
-    document.querySelectorAll("#m-read-switch button").forEach(function(b, i){ b.classList.toggle("active", i===0); });
+    pendingManualStatus = "unread";
+    document.querySelectorAll("#m-read-switch button").forEach(function(b){
+      b.classList.toggle("active", b.getAttribute("data-val") === "unread");
+    });
   }
 
   document.getElementById("open-manual").addEventListener("click", function(){
@@ -1041,10 +1133,11 @@
     document.getElementById("m-title").value = book.title || "";
     document.getElementById("m-author").value = book.author || "";
     document.getElementById("m-isbn").value = book.isbn || "";
+    document.getElementById("m-loan").value = book.loanedTo || "";
     manualSelectedCover = book.cover || "";
-    pendingManualRead = book.read ? 1 : 0;
+    pendingManualStatus = book.status || "unread";
     document.querySelectorAll("#m-read-switch button").forEach(function(b){
-      b.classList.toggle("active", parseInt(b.getAttribute("data-val"), 10) === pendingManualRead);
+      b.classList.toggle("active", b.getAttribute("data-val") === pendingManualStatus);
     });
     document.getElementById("manual-overlay-title").textContent = "Modifier le livre";
     document.getElementById("m-save").textContent = "Enregistrer les modifications";
@@ -1059,13 +1152,14 @@
     btn.addEventListener("click", function(){
       document.querySelectorAll("#m-read-switch button").forEach(function(b){ b.classList.remove("active"); });
       btn.classList.add("active");
-      pendingManualRead = parseInt(btn.getAttribute("data-val"), 10);
+      pendingManualStatus = btn.getAttribute("data-val");
     });
   });
   document.getElementById("m-save").addEventListener("click", function(){
     var title = document.getElementById("m-title").value.trim();
     var author = document.getElementById("m-author").value.trim();
     var isbn = normalizeIsbn(document.getElementById("m-isbn").value.trim());
+    var loanedTo = document.getElementById("m-loan").value.trim();
     if (!title){ showToast("Ajoute au moins un titre."); return; }
 
     if (editingBook){
@@ -1077,7 +1171,8 @@
       editingBook.author = author;
       editingBook.isbn = isbn;
       editingBook.cover = manualSelectedCover;
-      editingBook.read = !!pendingManualRead;
+      editingBook.status = pendingManualStatus;
+      editingBook.loanedTo = loanedTo;
       saveLibrary();
       renderAll();
       manualOverlay.hidden = true;
@@ -1090,7 +1185,7 @@
       showToast("Ce livre est déjà dans ta bibliothèque.");
       return;
     }
-    books.push({ isbn: isbn, title: title, author: author, cover: manualSelectedCover, read: !!pendingManualRead, addedAt: Date.now() });
+    books.push({ isbn: isbn, title: title, author: author, cover: manualSelectedCover, status: pendingManualStatus, loanedTo: loanedTo, addedAt: Date.now() });
     saveLibrary();
     renderAll();
     manualOverlay.hidden = true;
