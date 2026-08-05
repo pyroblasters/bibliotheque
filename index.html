@@ -526,6 +526,18 @@
     return null;
   }
 
+  // Normalise pour la comparaison uniquement (pas pour l'affichage) : les claviers
+  // mobiles remplacent souvent l'apostrophe droite par une apostrophe typographique,
+  // ce qui empêche deux titres de la même série de se regrouper.
+  function normalizeForMatch(s){
+    return (s || "")
+      .toLowerCase()
+      .replace(/[’‘`´]/g, "'")
+      .replace(/[“”]/g, '"')
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   function makeSeriesCard(entry){
     var card = document.createElement("div");
     card.className = "series-card";
@@ -570,7 +582,7 @@
     filtered.forEach(function(book){
       var parts = seriesKeyOf(book.title);
       if (parts){
-        var key = parts.series.toLowerCase();
+        var key = normalizeForMatch(parts.series);
         if (!seriesMap[key]) seriesMap[key] = { label: parts.series, items: [] };
         seriesMap[key].items.push({ book: book, sub: parts.sub });
       } else {
