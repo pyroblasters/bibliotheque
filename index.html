@@ -129,11 +129,12 @@
     border:1px solid var(--line); background:transparent; color:var(--ink-soft); white-space:nowrap;
   }
   .tag-btn.read{ background:var(--moss-bg); color:var(--moss); border-color:var(--moss-bg); }
-  .del-btn{
+  .row-actions-icons{ display:flex; gap:8px; align-items:center; }
+  .icon-btn{
     border:none; background:none; color:var(--ink-soft); padding:4px; opacity:0.55;
   }
-  .del-btn.confirm{ color:var(--stamp); opacity:1; font-size:10.5px; font-weight:700; }
-  .del-btn svg{ width:15px; height:15px; }
+  .icon-btn svg{ width:15px; height:15px; }
+  .del-btn.confirm{ color:var(--stamp); opacity:1; font-size:10.5px; font-weight:700; white-space:nowrap; }
 
   .empty{
     text-align:center; padding:50px 24px; color:var(--ink-soft);
@@ -333,7 +334,7 @@
 <!-- Manual add overlay -->
 <div class="overlay" id="manual-overlay" hidden>
   <div class="overlay-head">
-    <h2 class="serif">Ajouter manuellement</h2>
+    <h2 class="serif" id="manual-overlay-title">Ajouter manuellement</h2>
     <button class="close-btn" id="close-manual">&times;</button>
   </div>
   <div class="overlay-body">
@@ -379,6 +380,7 @@
   var lastCodes = [];
   var expandedSeries = new Set();
   var manualSelectedCover = "";
+  var editingBook = null;
 
   function apiHeaders(json){
     var h = {};
@@ -477,8 +479,16 @@
       saveLibrary();
       renderAll();
     });
+    var edit = document.createElement("button");
+    edit.className = "icon-btn edit-btn";
+    edit.setAttribute("aria-label", "Modifier");
+    edit.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+    edit.addEventListener("click", function(){
+      openEditOverlay(book);
+    });
     var del = document.createElement("button");
-    del.className = "del-btn";
+    del.className = "icon-btn del-btn";
+    del.setAttribute("aria-label", "Supprimer");
     del.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>';
     var confirmingDelete = false;
     del.addEventListener("click", function(){
@@ -498,8 +508,12 @@
       renderAll();
       showToast("Livre supprimé.");
     });
+    var iconRow = document.createElement("div");
+    iconRow.className = "row-actions-icons";
+    iconRow.appendChild(edit);
+    iconRow.appendChild(del);
     actions.appendChild(tag);
-    actions.appendChild(del);
+    actions.appendChild(iconRow);
     row.appendChild(actions);
     return row;
   }
@@ -990,18 +1004,45 @@
     scanResultEl.appendChild(actions);
   }
 
-  // ---------- Manual add overlay ----------
+  // ---------- Manual add / edit overlay ----------
   var manualOverlay = document.getElementById("manual-overlay");
-  document.getElementById("open-manual").addEventListener("click", function(){
+
+  function resetManualForm(){
     document.getElementById("m-title").value = "";
     document.getElementById("m-author").value = "";
     document.getElementById("m-isbn").value = "";
     manualSelectedCover = "";
     pendingManualRead = 0;
     document.querySelectorAll("#m-read-switch button").forEach(function(b, i){ b.classList.toggle("active", i===0); });
+  }
+
+  document.getElementById("open-manual").addEventListener("click", function(){
+    editingBook = null;
+    resetManualForm();
+    document.getElementById("manual-overlay-title").textContent = "Ajouter manuellement";
+    document.getElementById("m-save").textContent = "Ajouter à ma bibliothèque";
     manualOverlay.hidden = false;
   });
-  document.getElementById("close-manual").addEventListener("click", function(){ manualOverlay.hidden = true; });
+
+  function openEditOverlay(book){
+    editingBook = book;
+    document.getElementById("m-title").value = book.title || "";
+    document.getElementById("m-author").value = book.author || "";
+    document.getElementById("m-isbn").value = book.isbn || "";
+    manualSelectedCover = book.cover || "";
+    pendingManualRead = book.read ? 1 : 0;
+    document.querySelectorAll("#m-read-switch button").forEach(function(b){
+      b.classList.toggle("active", parseInt(b.getAttribute("data-val"), 10) === pendingManualRead);
+    });
+    document.getElementById("manual-overlay-title").textContent = "Modifier le livre";
+    document.getElementById("m-save").textContent = "Enregistrer les modifications";
+    manualOverlay.hidden = false;
+  }
+
+  document.getElementById("close-manual").addEventListener("click", function(){
+    manualOverlay.hidden = true;
+    editingBook = null;
+  });
   document.querySelectorAll("#m-read-switch button").forEach(function(btn){
     btn.addEventListener("click", function(){
       document.querySelectorAll("#m-read-switch button").forEach(function(b){ b.classList.remove("active"); });
@@ -1014,6 +1055,25 @@
     var author = document.getElementById("m-author").value.trim();
     var isbn = normalizeIsbn(document.getElementById("m-isbn").value.trim());
     if (!title){ showToast("Ajoute au moins un titre."); return; }
+
+    if (editingBook){
+      if (isbn && books.some(function(b){ return b !== editingBook && b.isbn === isbn; })){
+        showToast("Un autre livre de ta bibliothèque a déjà cet ISBN.");
+        return;
+      }
+      editingBook.title = title;
+      editingBook.author = author;
+      editingBook.isbn = isbn;
+      editingBook.cover = manualSelectedCover;
+      editingBook.read = !!pendingManualRead;
+      saveLibrary();
+      renderAll();
+      manualOverlay.hidden = true;
+      showToast("« " + title + " » mis à jour.");
+      editingBook = null;
+      return;
+    }
+
     if (isbn && books.find(function(b){ return b.isbn === isbn; })){
       showToast("Ce livre est déjà dans ta bibliothèque.");
       return;
@@ -1030,9 +1090,6 @@
     if (r.author) document.getElementById("m-author").value = r.author;
     if (r.isbn) document.getElementById("m-isbn").value = r.isbn;
     manualSelectedCover = r.cover || "";
-  });
-  document.getElementById("m-title").addEventListener("input", function(){
-    manualSelectedCover = "";
   });
 
   // ---------- Export ----------
