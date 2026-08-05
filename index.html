@@ -368,6 +368,10 @@
       <input type="text" id="m-author" placeholder="Patrick Rothfuss">
     </div>
     <div class="form-field">
+      <label for="m-series">Série (optionnel)</label>
+      <input type="text" id="m-series" placeholder="Ex: Harry Potter">
+    </div>
+    <div class="form-field">
       <label for="m-isbn">ISBN (optionnel)</label>
       <input type="text" id="m-isbn" placeholder="978-2-...">
     </div>
@@ -428,6 +432,7 @@
         books.forEach(function(b){
           if (!b.status) b.status = b.read ? "read" : "unread";
           if (typeof b.loanedTo !== "string") b.loanedTo = "";
+          if (typeof b.series !== "string") b.series = "";
         });
         renderAll();
       })
@@ -574,12 +579,127 @@
     return row;
   }
 
-  // Détecte un motif "Série : sous-titre" (ex. "Les travaux d'Apollon: Le tombeau du tyran")
-  function seriesKeyOf(title){
-    var t = (title || "").trim();
-    var m = t.match(/^(.{3,}?)\s*[:–—]\s*(.+)$/);
-    if (m) return { series: m[1].trim(), sub: m[2].trim() };
-    return null;
+  var MIN_PREFIX_WORDS = 2;
+
+  function tokenizeTitle(title){
+    return (title || "")
+      .trim()
+      .split(/\s+/)
+      .map(function(w){ return w.replace(/^[:\-–—,;.'"]+|[:\-–—,;.'"]+$/g, ""); })
+      .filter(function(w){ return w.length > 0; });
+  }
+
+  function commonPrefixLen(tokensA, tokensB){
+    var n = Math.min(tokensA.length, tokensB.length);
+    var i = 0;
+    while (i < n && normalizeForMatch(tokensA[i]) === normalizeForMatch(tokensB[i])) i++;
+    return i;
+  }
+
+  function deriveSub(tokens, prefixLen, fallbackTitle){
+    var rest = tokens.slice(prefixLen).join(" ").trim();
+    return rest || fallbackTitle;
+  }
+
+  // Regroupe les livres en séries : priorité au champ "Série" explicite,
+  // puis détection automatique par préfixe de mots commun (au sein d'un même auteur).
+  // Ça permet de regrouper "Harry Potter à l'école des sorciers" et "Harry Potter
+  // et la Chambre des secrets" même sans ":" dans le titre.
+  function buildSeriesEntries(filtered){
+    var explicitBuckets = {};
+    var noExplicit = [];
+
+    filtered.forEach(function(book){
+      if (book.series && book.series.trim()){
+        var key = normalizeForMatch(book.series);
+        if (!explicitBuckets[key]){
+          explicitBuckets[key] = { label: book.series.trim(), prefixTokens: tokenizeTitle(book.series), items: [] };
+        }
+        explicitBuckets[key].items.push(book);
+      } else {
+        noExplicit.push(book);
+      }
+    });
+
+    // Un livre non tagué qui commence par le nom d'une série déjà taguée la rejoint.
+    var stillUnassigned = [];
+    noExplicit.forEach(function(book){
+      var tokens = tokenizeTitle(book.title);
+      var matched = null;
+      Object.keys(explicitBuckets).forEach(function(key){
+        if (matched) return;
+        var bucket = explicitBuckets[key];
+        var len = commonPrefixLen(tokens, bucket.prefixTokens);
+        if (bucket.prefixTokens.length && len >= bucket.prefixTokens.length) matched = bucket;
+      });
+      if (matched) matched.items.push(book);
+      else stillUnassigned.push(book);
+    });
+
+    // Le reste : clustering par préfixe de mots commun, au sein d'un même auteur.
+    var byAuthor = {};
+    stillUnassigned.forEach(function(book){
+      var a = normalizeForMatch(book.author || "");
+      if (!byAuthor[a]) byAuthor[a] = [];
+      byAuthor[a].push(book);
+    });
+
+    var autoClusters = [];
+    var standalone = [];
+    Object.keys(byAuthor).forEach(function(a){
+      var list = byAuthor[a].slice().sort(function(x,y){ return (x.addedAt||0) - (y.addedAt||0); });
+      var clusters = [];
+      list.forEach(function(book){
+        var tokens = tokenizeTitle(book.title);
+        var best = null, bestLen = 0;
+        clusters.forEach(function(c){
+          var len = commonPrefixLen(tokens, c.prefixTokens);
+          if (len >= MIN_PREFIX_WORDS && len > bestLen){ bestLen = len; best = c; }
+        });
+        if (best){
+          best.prefixTokens = best.prefixTokens.slice(0, bestLen);
+          best.items.push(book);
+        } else {
+          clusters.push({ prefixTokens: tokens.slice(), items: [book] });
+        }
+      });
+      clusters.forEach(function(c){
+        if (c.items.length >= 2) autoClusters.push(c);
+        else standalone.push(c.items[0]);
+      });
+    });
+
+    var entries = [];
+    Object.keys(explicitBuckets).forEach(function(key){
+      var bucket = explicitBuckets[key];
+      if (bucket.items.length >= 2){
+        var maxAdded1 = 0;
+        var items1 = bucket.items.map(function(book){
+          maxAdded1 = Math.max(maxAdded1, book.addedAt || 0);
+          var tokens = tokenizeTitle(book.title);
+          var len = commonPrefixLen(tokens, bucket.prefixTokens) >= bucket.prefixTokens.length ? bucket.prefixTokens.length : 0;
+          return { book: book, sub: len ? deriveSub(tokens, len, book.title) : book.title };
+        });
+        entries.push({ type: "series", key: "e:" + key, label: bucket.label, items: items1, sortKey: maxAdded1 });
+      } else if (bucket.items.length === 1){
+        standalone.push(bucket.items[0]);
+      }
+    });
+    autoClusters.forEach(function(c, idx){
+      var maxAdded2 = 0;
+      var label = c.prefixTokens.join(" ");
+      var items2 = c.items.map(function(book){
+        maxAdded2 = Math.max(maxAdded2, book.addedAt || 0);
+        var tokens = tokenizeTitle(book.title);
+        return { book: book, sub: deriveSub(tokens, c.prefixTokens.length, book.title) };
+      });
+      entries.push({ type: "series", key: "a:" + normalizeForMatch(label) + ":" + idx, label: label, items: items2, sortKey: maxAdded2 });
+    });
+    standalone.forEach(function(book){
+      entries.push({ type: "book", book: book, sortKey: book.addedAt || 0 });
+    });
+
+    return entries;
   }
 
   // Normalise pour la comparaison uniquement (pas pour l'affichage) : les claviers
@@ -633,33 +753,7 @@
   }
 
   function renderGrouped(list, filtered){
-    var seriesMap = {};
-    var standalone = [];
-    filtered.forEach(function(book){
-      var parts = seriesKeyOf(book.title);
-      if (parts){
-        var key = normalizeForMatch(parts.series);
-        if (!seriesMap[key]) seriesMap[key] = { label: parts.series, items: [] };
-        seriesMap[key].items.push({ book: book, sub: parts.sub });
-      } else {
-        standalone.push(book);
-      }
-    });
-
-    var entries = [];
-    Object.keys(seriesMap).forEach(function(key){
-      var g = seriesMap[key];
-      if (g.items.length >= 2){
-        var maxAdded = 0;
-        g.items.forEach(function(it){ maxAdded = Math.max(maxAdded, it.book.addedAt || 0); });
-        entries.push({ type: "series", key: key, label: g.label, items: g.items, sortKey: maxAdded });
-      } else {
-        standalone.push(g.items[0].book);
-      }
-    });
-    standalone.forEach(function(book){
-      entries.push({ type: "book", book: book, sortKey: book.addedAt || 0 });
-    });
+    var entries = buildSeriesEntries(filtered);
     entries.forEach(function(entry){
       if (entry.type === "book"){
         entry.sortTitle = entry.book.title || "";
@@ -1111,6 +1205,7 @@
   function resetManualForm(){
     document.getElementById("m-title").value = "";
     document.getElementById("m-author").value = "";
+    document.getElementById("m-series").value = "";
     document.getElementById("m-isbn").value = "";
     document.getElementById("m-loan").value = "";
     manualSelectedCover = "";
@@ -1132,6 +1227,7 @@
     editingBook = book;
     document.getElementById("m-title").value = book.title || "";
     document.getElementById("m-author").value = book.author || "";
+    document.getElementById("m-series").value = book.series || "";
     document.getElementById("m-isbn").value = book.isbn || "";
     document.getElementById("m-loan").value = book.loanedTo || "";
     manualSelectedCover = book.cover || "";
@@ -1158,6 +1254,7 @@
   document.getElementById("m-save").addEventListener("click", function(){
     var title = document.getElementById("m-title").value.trim();
     var author = document.getElementById("m-author").value.trim();
+    var series = document.getElementById("m-series").value.trim();
     var isbn = normalizeIsbn(document.getElementById("m-isbn").value.trim());
     var loanedTo = document.getElementById("m-loan").value.trim();
     if (!title){ showToast("Ajoute au moins un titre."); return; }
@@ -1169,6 +1266,7 @@
       }
       editingBook.title = title;
       editingBook.author = author;
+      editingBook.series = series;
       editingBook.isbn = isbn;
       editingBook.cover = manualSelectedCover;
       editingBook.status = pendingManualStatus;
@@ -1185,12 +1283,13 @@
       showToast("Ce livre est déjà dans ta bibliothèque.");
       return;
     }
-    books.push({ isbn: isbn, title: title, author: author, cover: manualSelectedCover, status: pendingManualStatus, loanedTo: loanedTo, addedAt: Date.now() });
+    books.push({ isbn: isbn, title: title, author: author, series: series, cover: manualSelectedCover, status: pendingManualStatus, loanedTo: loanedTo, addedAt: Date.now() });
     saveLibrary();
     renderAll();
     manualOverlay.hidden = true;
     showToast("« " + title + " » ajouté.");
   });
+
 
   attachAutocomplete(document.getElementById("m-title"), function(r){
     document.getElementById("m-title").value = r.title;
