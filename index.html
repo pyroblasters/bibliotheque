@@ -218,6 +218,45 @@
     width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:var(--card); font-size:14.5px; color:var(--ink);
   }
 
+  /* Autocomplete */
+  .ac-dropdown{
+    position:absolute; left:0; right:0; top:100%; margin-top:4px;
+    background:var(--card); border:1px solid var(--line); border-radius:8px;
+    box-shadow:var(--shadow); max-height:260px; overflow-y:auto; z-index:50;
+  }
+  .ac-dropdown[hidden]{ display:none; }
+  .ac-item{
+    display:flex; gap:10px; padding:8px 10px; align-items:center;
+    border-bottom:1px solid var(--line-soft);
+  }
+  .ac-item:last-child{ border-bottom:none; }
+  .ac-item:active{ background:var(--paper); }
+  .ac-item .cover{ font-size:12px; flex-shrink:0; }
+  .ac-item-info{ min-width:0; flex:1; }
+  .ac-item-title{ font-size:13px; font-weight:600; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ac-item-author{ font-size:11.5px; color:var(--ink-soft); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  /* Series grouping */
+  .series-card{
+    background:var(--card); border:1px solid var(--line-soft); border-radius:var(--radius); overflow:hidden;
+  }
+  .series-header{
+    width:100%; display:flex; align-items:center; gap:10px; padding:13px 12px;
+    border:none; background:none; text-align:left;
+  }
+  .series-chevron{
+    color:var(--brass); font-size:12px; flex-shrink:0; width:12px; display:inline-block;
+    transition:transform .2s ease;
+  }
+  .series-chevron.open{ transform:rotate(90deg); }
+  .series-name{ font-weight:600; font-size:14.5px; color:var(--ink); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .series-meta{ font-size:11px; color:var(--brass); flex-shrink:0; font-weight:700; white-space:nowrap; }
+  .series-books{
+    padding:0 10px 10px; display:flex; flex-direction:column; gap:8px;
+    border-top:1px solid var(--line-soft); padding-top:10px; margin-top:-2px;
+  }
+  .series-books .row{ border-left-width:3px; }
+
   /* Toast */
   #toast{
     position:fixed; left:50%; bottom:calc(env(safe-area-inset-bottom) + 22px); transform:translateX(-50%) translateY(20px);
@@ -336,6 +375,8 @@
   var quaggaRunning = false;
   var pendingManualRead = 0;
   var lastCodes = [];
+  var expandedSeries = new Set();
+  var manualSelectedCover = "";
 
   function apiHeaders(json){
     var h = {};
@@ -407,6 +448,141 @@
     return wrap;
   }
 
+  function makeRow(book, opts){
+    opts = opts || {};
+    var row = document.createElement("div");
+    row.className = "row" + (book.read ? " is-read" : "");
+    row.appendChild(coverEl(book));
+
+    var info = document.createElement("div");
+    info.className = "row-info";
+    var t = document.createElement("div"); t.className = "row-title serif"; t.textContent = opts.titleOverride || book.title || "Sans titre";
+    var a = document.createElement("div"); a.className = "row-author"; a.textContent = book.author || "Auteur inconnu";
+    info.appendChild(t); info.appendChild(a);
+    if (book.isbn){
+      var isbnEl = document.createElement("div"); isbnEl.className = "row-isbn mono"; isbnEl.textContent = book.isbn;
+      info.appendChild(isbnEl);
+    }
+    row.appendChild(info);
+
+    var actions = document.createElement("div");
+    actions.className = "row-actions";
+    var tag = document.createElement("button");
+    tag.className = "tag-btn" + (book.read ? " read" : "");
+    tag.textContent = book.read ? "LU" : "NON LU";
+    tag.addEventListener("click", function(){
+      book.read = !book.read;
+      saveLibrary();
+      renderAll();
+    });
+    var del = document.createElement("button");
+    del.className = "del-btn";
+    del.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>';
+    var confirmingDelete = false;
+    del.addEventListener("click", function(){
+      if (!confirmingDelete){
+        confirmingDelete = true;
+        del.classList.add("confirm");
+        del.textContent = "Supprimer ?";
+        setTimeout(function(){
+          confirmingDelete = false;
+          del.classList.remove("confirm");
+          del.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>';
+        }, 2500);
+        return;
+      }
+      books = books.filter(function(b){ return b !== book; });
+      saveLibrary();
+      renderAll();
+      showToast("Livre supprimé.");
+    });
+    actions.appendChild(tag);
+    actions.appendChild(del);
+    row.appendChild(actions);
+    return row;
+  }
+
+  // Détecte un motif "Série : sous-titre" (ex. "Les travaux d'Apollon: Le tombeau du tyran")
+  function seriesKeyOf(title){
+    var t = (title || "").trim();
+    var m = t.match(/^(.{3,}?)\s*[:–—]\s*(.+)$/);
+    if (m) return { series: m[1].trim(), sub: m[2].trim() };
+    return null;
+  }
+
+  function makeSeriesCard(entry){
+    var card = document.createElement("div");
+    card.className = "series-card";
+    var readCount = entry.items.filter(function(it){ return it.book.read; }).length;
+    var isOpen = expandedSeries.has(entry.key);
+
+    var header = document.createElement("button");
+    header.type = "button";
+    header.className = "series-header";
+    var chevron = document.createElement("span");
+    chevron.className = "series-chevron" + (isOpen ? " open" : "");
+    chevron.textContent = "▸";
+    var name = document.createElement("span");
+    name.className = "series-name serif";
+    name.textContent = entry.label;
+    var meta = document.createElement("span");
+    meta.className = "series-meta";
+    meta.textContent = entry.items.length + " tomes · " + readCount + " lu" + (readCount > 1 ? "s" : "");
+    header.appendChild(chevron); header.appendChild(name); header.appendChild(meta);
+    header.addEventListener("click", function(){
+      if (expandedSeries.has(entry.key)) expandedSeries.delete(entry.key);
+      else expandedSeries.add(entry.key);
+      renderList();
+    });
+    card.appendChild(header);
+
+    if (isOpen){
+      var body = document.createElement("div");
+      body.className = "series-books";
+      entry.items
+        .slice()
+        .sort(function(a,b){ return (a.sub||"").localeCompare(b.sub||""); })
+        .forEach(function(it){ body.appendChild(makeRow(it.book, { titleOverride: it.sub })); });
+      card.appendChild(body);
+    }
+    return card;
+  }
+
+  function renderGrouped(list, filtered){
+    var seriesMap = {};
+    var standalone = [];
+    filtered.forEach(function(book){
+      var parts = seriesKeyOf(book.title);
+      if (parts){
+        var key = parts.series.toLowerCase();
+        if (!seriesMap[key]) seriesMap[key] = { label: parts.series, items: [] };
+        seriesMap[key].items.push({ book: book, sub: parts.sub });
+      } else {
+        standalone.push(book);
+      }
+    });
+
+    var entries = [];
+    Object.keys(seriesMap).forEach(function(key){
+      var g = seriesMap[key];
+      if (g.items.length >= 2){
+        var maxAdded = 0;
+        g.items.forEach(function(it){ maxAdded = Math.max(maxAdded, it.book.addedAt || 0); });
+        entries.push({ type: "series", key: key, label: g.label, items: g.items, sortKey: maxAdded });
+      } else {
+        standalone.push(g.items[0].book);
+      }
+    });
+    standalone.forEach(function(book){
+      entries.push({ type: "book", book: book, sortKey: book.addedAt || 0 });
+    });
+    entries.sort(function(a,b){ return b.sortKey - a.sortKey; });
+
+    entries.forEach(function(entry){
+      list.appendChild(entry.type === "book" ? makeRow(entry.book) : makeSeriesCard(entry));
+    });
+  }
+
   function renderList(){
     var list = document.getElementById("book-list");
     list.innerHTML = "";
@@ -429,58 +605,12 @@
       return;
     }
 
-    filtered.forEach(function(book){
-      var row = document.createElement("div");
-      row.className = "row" + (book.read ? " is-read" : "");
-      row.appendChild(coverEl(book));
-
-      var info = document.createElement("div");
-      info.className = "row-info";
-      var t = document.createElement("div"); t.className = "row-title serif"; t.textContent = book.title || "Sans titre";
-      var a = document.createElement("div"); a.className = "row-author"; a.textContent = book.author || "Auteur inconnu";
-      info.appendChild(t); info.appendChild(a);
-      if (book.isbn){
-        var isbnEl = document.createElement("div"); isbnEl.className = "row-isbn mono"; isbnEl.textContent = book.isbn;
-        info.appendChild(isbnEl);
-      }
-      row.appendChild(info);
-
-      var actions = document.createElement("div");
-      actions.className = "row-actions";
-      var tag = document.createElement("button");
-      tag.className = "tag-btn" + (book.read ? " read" : "");
-      tag.textContent = book.read ? "LU" : "NON LU";
-      tag.addEventListener("click", function(){
-        book.read = !book.read;
-        saveLibrary();
-        renderAll();
-      });
-      var del = document.createElement("button");
-      del.className = "del-btn";
-      del.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>';
-      var confirmingDelete = false;
-      del.addEventListener("click", function(){
-        if (!confirmingDelete){
-          confirmingDelete = true;
-          del.classList.add("confirm");
-          del.textContent = "Supprimer ?";
-          setTimeout(function(){
-            confirmingDelete = false;
-            del.classList.remove("confirm");
-            del.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>';
-          }, 2500);
-          return;
-        }
-        books = books.filter(function(b){ return b !== book; });
-        saveLibrary();
-        renderAll();
-        showToast("Livre supprimé.");
-      });
-      actions.appendChild(tag);
-      actions.appendChild(del);
-      row.appendChild(actions);
-      list.appendChild(row);
-    });
+    var canGroup = (filterState === "all" && !searchState);
+    if (canGroup){
+      renderGrouped(list, filtered);
+    } else {
+      filtered.forEach(function(book){ list.appendChild(makeRow(book)); });
+    }
   }
 
   // ---------- Toast ----------
@@ -595,6 +725,90 @@
     Quagga.onDetected(onBarcodeDetected);
   }
 
+  // ---------- Autocomplétion (suggestions pendant la saisie du titre) ----------
+  function searchBookSuggestions(query){
+    return fetch("https://www.googleapis.com/books/v1/volumes?q=" + encodeURIComponent(query) + "&maxResults=5")
+      .then(function(r){ return r.json(); })
+      .then(function(data){
+        if (!data || !data.items) return [];
+        return data.items.map(function(item){
+          var info = item.volumeInfo || {};
+          var isbn = "";
+          if (info.industryIdentifiers){
+            var pick = info.industryIdentifiers.find(function(x){ return x.type === "ISBN_13"; }) ||
+                       info.industryIdentifiers.find(function(x){ return x.type === "ISBN_10"; });
+            if (pick) isbn = pick.identifier;
+          }
+          var cover = info.imageLinks ? (info.imageLinks.thumbnail || info.imageLinks.smallThumbnail || "").replace("http://","https://") : "";
+          return {
+            title: info.title || "",
+            author: (info.authors || []).join(", "),
+            isbn: normalizeIsbn(isbn),
+            cover: cover
+          };
+        }).filter(function(b){ return b.title; });
+      })
+      .catch(function(){ return []; });
+  }
+
+  function attachAutocomplete(inputEl, onSelect){
+    var parent = inputEl.parentNode;
+    parent.style.position = "relative";
+    var dropdown = document.createElement("div");
+    dropdown.className = "ac-dropdown";
+    dropdown.hidden = true;
+    parent.appendChild(dropdown);
+
+    var debounceTimer = null;
+    var currentQuery = "";
+
+    inputEl.addEventListener("input", function(){
+      var q = inputEl.value.trim();
+      currentQuery = q;
+      clearTimeout(debounceTimer);
+      if (q.length < 3){
+        dropdown.hidden = true;
+        dropdown.innerHTML = "";
+        return;
+      }
+      debounceTimer = setTimeout(function(){
+        searchBookSuggestions(q).then(function(results){
+          if (currentQuery !== q) return;
+          renderDropdown(results);
+        });
+      }, 400);
+    });
+    inputEl.addEventListener("blur", function(){
+      setTimeout(function(){ dropdown.hidden = true; }, 150);
+    });
+    inputEl.addEventListener("focus", function(){
+      if (dropdown.children.length) dropdown.hidden = false;
+    });
+
+    function renderDropdown(results){
+      dropdown.innerHTML = "";
+      if (!results.length){ dropdown.hidden = true; return; }
+      results.forEach(function(r){
+        var item = document.createElement("div");
+        item.className = "ac-item";
+        item.appendChild(coverEl(r, 30));
+        var info = document.createElement("div");
+        info.className = "ac-item-info";
+        var t = document.createElement("div"); t.className = "ac-item-title"; t.textContent = r.title;
+        var a = document.createElement("div"); a.className = "ac-item-author"; a.textContent = r.author || "Auteur inconnu";
+        info.appendChild(t); info.appendChild(a);
+        item.appendChild(info);
+        item.addEventListener("mousedown", function(e){
+          e.preventDefault();
+          onSelect(r);
+          dropdown.hidden = true;
+        });
+        dropdown.appendChild(item);
+      });
+      dropdown.hidden = false;
+    }
+  }
+
   function stopScanner(){
     if (quaggaRunning && typeof Quagga !== "undefined"){
       try { Quagga.offDetected(onBarcodeDetected); Quagga.stop(); } catch(e){}
@@ -669,17 +883,29 @@
     scanResultEl.innerHTML = "";
     var card = document.createElement("div");
     card.className = "result-card";
-    card.appendChild(coverEl({title: title, cover: cover}, 60));
+    var coverPreview = coverEl({title: title, cover: cover}, 60);
+    card.appendChild(coverPreview);
 
     var fields = document.createElement("div");
     fields.className = "result-fields";
     fields.innerHTML =
-      (found ? "" : '<div style="font-size:12px;color:var(--ink-soft);margin-bottom:2px;">Livre non trouvé automatiquement — complète les infos.</div>') +
+      (found ? "" : '<div style="font-size:12px;color:var(--ink-soft);margin-bottom:2px;">Livre non trouvé automatiquement — tape le titre pour voir des suggestions.</div>') +
       '<div><span class="field-label">Titre</span><input class="field-input" id="ac-title" value="' + escapeHtml(title) + '"></div>' +
       '<div><span class="field-label">Auteur</span><input class="field-input" id="ac-author" value="' + escapeHtml(author) + '"></div>' +
       '<div class="read-toggle-row"><div class="read-switch" id="ac-read-switch"><button type="button" data-val="0" class="active">Non lu</button><button type="button" data-val="1">Lu</button></div></div>';
     card.appendChild(fields);
     scanResultEl.appendChild(card);
+
+    attachAutocomplete(document.getElementById("ac-title"), function(r){
+      document.getElementById("ac-title").value = r.title;
+      document.getElementById("ac-author").value = r.author || "";
+      if (r.cover){
+        cover = r.cover;
+        var newPreview = coverEl({title: r.title, cover: cover}, 60);
+        card.replaceChild(newPreview, coverPreview);
+        coverPreview = newPreview;
+      }
+    });
 
     var readVal = 0;
     var switchEl = document.getElementById("ac-read-switch");
@@ -723,6 +949,7 @@
     document.getElementById("m-title").value = "";
     document.getElementById("m-author").value = "";
     document.getElementById("m-isbn").value = "";
+    manualSelectedCover = "";
     pendingManualRead = 0;
     document.querySelectorAll("#m-read-switch button").forEach(function(b, i){ b.classList.toggle("active", i===0); });
     manualOverlay.hidden = false;
@@ -744,11 +971,21 @@
       showToast("Ce livre est déjà dans ta bibliothèque.");
       return;
     }
-    books.push({ isbn: isbn, title: title, author: author, cover: "", read: !!pendingManualRead, addedAt: Date.now() });
+    books.push({ isbn: isbn, title: title, author: author, cover: manualSelectedCover, read: !!pendingManualRead, addedAt: Date.now() });
     saveLibrary();
     renderAll();
     manualOverlay.hidden = true;
     showToast("« " + title + " » ajouté.");
+  });
+
+  attachAutocomplete(document.getElementById("m-title"), function(r){
+    document.getElementById("m-title").value = r.title;
+    if (r.author) document.getElementById("m-author").value = r.author;
+    if (r.isbn) document.getElementById("m-isbn").value = r.isbn;
+    manualSelectedCover = r.cover || "";
+  });
+  document.getElementById("m-title").addEventListener("input", function(){
+    manualSelectedCover = "";
   });
 
   // ---------- Export ----------
