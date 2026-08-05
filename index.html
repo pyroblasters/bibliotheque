@@ -642,6 +642,18 @@
   // ---------- Book lookup ----------
   function normalizeIsbn(code){ return (code || "").replace(/[^0-9Xx]/g, ""); }
 
+  // Certaines fiches (Google Books notamment) séparent le titre de la série
+  // et le sous-titre du tome en deux champs distincts. On les recombine ici
+  // pour obtenir "Série : sous-titre", cohérent avec le regroupement par série.
+  function combineTitle(title, subtitle){
+    title = (title || "").trim();
+    subtitle = (subtitle || "").trim();
+    if (!subtitle) return title;
+    if (!title) return subtitle;
+    if (title.toLowerCase().indexOf(subtitle.toLowerCase()) !== -1) return title;
+    return title + ": " + subtitle;
+  }
+
   function lookupBook(isbn){
     return fetch("https://www.googleapis.com/books/v1/volumes?q=isbn:" + isbn)
       .then(function(r){ return r.json(); })
@@ -651,7 +663,7 @@
           var cover = "";
           if (info.imageLinks) cover = (info.imageLinks.thumbnail || info.imageLinks.smallThumbnail || "").replace("http://","https://");
           return {
-            title: info.title || "",
+            title: combineTitle(info.title, info.subtitle),
             author: (info.authors || []).join(", "),
             cover: cover
           };
@@ -666,7 +678,7 @@
             if (data && data[key]){
               var b = data[key];
               return {
-                title: b.title || "",
+                title: combineTitle(b.title, b.subtitle),
                 author: (b.authors || []).map(function(a){ return a.name; }).join(", "),
                 cover: b.cover ? (b.cover.medium || b.cover.small || "") : ""
               };
@@ -740,7 +752,7 @@
       }
       var cover = info.imageLinks ? (info.imageLinks.thumbnail || info.imageLinks.smallThumbnail || "").replace("http://","https://") : "";
       return {
-        title: info.title || "",
+        title: combineTitle(info.title, info.subtitle),
         author: (info.authors || []).join(", "),
         isbn: normalizeIsbn(isbn),
         cover: cover
@@ -754,7 +766,7 @@
       var cover = d.cover_i ? ("https://covers.openlibrary.org/b/id/" + d.cover_i + "-M.jpg") : "";
       var isbn = (d.isbn && d.isbn.length) ? d.isbn[0] : "";
       return {
-        title: d.title || "",
+        title: combineTitle(d.title, d.subtitle),
         author: (d.author_name || []).join(", "),
         isbn: normalizeIsbn(isbn),
         cover: cover
