@@ -268,6 +268,21 @@
   .ac-empty{ padding:10px 12px; font-size:12.5px; color:var(--ink-soft); }
 
   /* Series grouping */
+  /* Author grouping */
+  .author-group{ display:flex; flex-direction:column; gap:10px; }
+  .author-header{
+    width:100%; display:flex; align-items:baseline; gap:9px; padding:2px 2px 9px;
+    border:none; background:none; text-align:left; border-bottom:1px solid var(--line);
+  }
+  .author-chevron{
+    color:var(--ink-soft); font-size:11px; flex-shrink:0; width:11px; display:inline-block;
+    transition:transform .2s ease; position:relative; top:-1px;
+  }
+  .author-chevron.collapsed{ transform:rotate(-90deg); }
+  .author-name{ font-weight:700; font-size:16.5px; color:var(--ink); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .author-meta{ font-size:10.5px; color:var(--ink-soft); flex-shrink:0; font-weight:600; text-transform:uppercase; letter-spacing:0.4px; }
+  .author-books{ display:flex; flex-direction:column; gap:10px; }
+
   .series-card{
     background:var(--card); border:1px solid var(--line-soft); border-radius:var(--radius); overflow:hidden;
   }
@@ -436,6 +451,7 @@
   var pendingManualStatus = "unread";
   var lastCodes = [];
   var expandedSeries = new Set();
+  var collapsedAuthors = new Set();
   var manualSelectedCover = "";
   var editingBook = null;
 
@@ -778,8 +794,8 @@
     return card;
   }
 
-  function renderGrouped(list, filtered){
-    var entries = buildSeriesEntries(filtered);
+  function renderSeriesEntries(container, booksSubset){
+    var entries = buildSeriesEntries(booksSubset);
     entries.forEach(function(entry){
       if (entry.type === "book"){
         entry.sortTitle = entry.book.title || "";
@@ -790,9 +806,70 @@
       }
     });
     entries.sort(compareEntries);
-
     entries.forEach(function(entry){
-      list.appendChild(entry.type === "book" ? makeRow(entry.book) : makeSeriesCard(entry));
+      container.appendChild(entry.type === "book" ? makeRow(entry.book) : makeSeriesCard(entry));
+    });
+  }
+
+  function makeAuthorGroup(ag){
+    var wrap = document.createElement("div");
+    wrap.className = "author-group";
+    var collapsed = collapsedAuthors.has(ag.key);
+
+    var header = document.createElement("button");
+    header.type = "button";
+    header.className = "author-header";
+    var chevron = document.createElement("span");
+    chevron.className = "author-chevron" + (collapsed ? " collapsed" : "");
+    chevron.textContent = "▾";
+    var name = document.createElement("span");
+    name.className = "author-name serif";
+    name.textContent = ag.label;
+    var meta = document.createElement("span");
+    meta.className = "author-meta";
+    meta.textContent = ag.books.length + (ag.books.length > 1 ? " livres" : " livre");
+    header.appendChild(chevron); header.appendChild(name); header.appendChild(meta);
+    header.addEventListener("click", function(){
+      if (collapsedAuthors.has(ag.key)) collapsedAuthors.delete(ag.key);
+      else collapsedAuthors.add(ag.key);
+      renderList();
+    });
+    wrap.appendChild(header);
+
+    if (!collapsed){
+      var body = document.createElement("div");
+      body.className = "author-books";
+      renderSeriesEntries(body, ag.books);
+      wrap.appendChild(body);
+    }
+    return wrap;
+  }
+
+  function renderByAuthor(list, filtered){
+    var byAuthor = {};
+    filtered.forEach(function(book){
+      var a = (book.author || "").trim();
+      var key = a ? normalizeForMatch(a) : "__unknown__";
+      var label = a || "Auteur inconnu";
+      if (!byAuthor[key]) byAuthor[key] = { key: key, label: label, books: [] };
+      byAuthor[key].books.push(book);
+    });
+
+    var authorGroups = Object.keys(byAuthor).map(function(key){
+      var g = byAuthor[key];
+      var maxAdded = 0;
+      g.books.forEach(function(b){ maxAdded = Math.max(maxAdded, b.addedAt || 0); });
+      g.sortKey = maxAdded;
+      return g;
+    });
+
+    authorGroups.sort(function(a, b){
+      if (sortState === "recent") return b.sortKey - a.sortKey;
+      return a.label.localeCompare(b.label, "fr", { sensitivity: "base" });
+    });
+
+    authorGroups.forEach(function(ag){
+      list.appendChild(makeAuthorGroup(ag));
     });
   }
 
@@ -839,7 +916,7 @@
 
     var canGroup = (filterState === "all" && !searchState);
     if (canGroup){
-      renderGrouped(list, filtered);
+      renderByAuthor(list, filtered);
     } else {
       filtered.forEach(function(book){ list.appendChild(makeRow(book)); });
     }
