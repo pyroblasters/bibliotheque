@@ -231,6 +231,21 @@
   .form-field input{
     width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:8px; background:var(--card); font-size:14.5px; color:var(--ink);
   }
+  .cover-editor{ display:flex; gap:12px; align-items:flex-start; }
+  .cover-preview{
+    width:60px; height:88px; border-radius:4px; overflow:hidden; flex-shrink:0;
+    background:var(--ink-soft); display:flex; align-items:center; justify-content:center;
+    color:var(--card); font-family:"Source Serif 4", Georgia, serif; font-weight:600; font-size:20px;
+  }
+  .cover-preview img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .cover-editor-controls{ flex:1; display:flex; flex-direction:column; gap:8px; min-width:0; }
+  .cover-upload-btn{
+    display:inline-block; text-align:center; padding:9px 12px; border-radius:8px; border:1px solid var(--line);
+    background:var(--card); font-size:13px; font-weight:600; color:var(--ink); cursor:pointer; width:fit-content;
+  }
+  .cover-editor-controls input[type="text"]{
+    width:100%; padding:8px 11px; border:1px solid var(--line); border-radius:8px; background:var(--card); font-size:13px; color:var(--ink);
+  }
 
   /* Autocomplete */
   .ac-dropdown{
@@ -359,6 +374,17 @@
     <button class="close-btn" id="close-manual">&times;</button>
   </div>
   <div class="overlay-body">
+    <div class="form-field">
+      <label>Couverture</label>
+      <div class="cover-editor">
+        <div class="cover-preview" id="m-cover-preview"></div>
+        <div class="cover-editor-controls">
+          <label class="cover-upload-btn" for="m-cover-file">Choisir une photo</label>
+          <input type="file" id="m-cover-file" accept="image/*" hidden>
+          <input type="text" id="m-cover-url" placeholder="ou colle un lien d'image (https://...)">
+        </div>
+      </div>
+    </div>
     <div class="form-field">
       <label for="m-title">Titre</label>
       <input type="text" id="m-title" placeholder="Le Nom du vent">
@@ -850,6 +876,28 @@
   // ---------- Book lookup ----------
   function normalizeIsbn(code){ return (code || "").replace(/[^0-9Xx]/g, ""); }
 
+  // Redimensionne et compresse une photo choisie par l'utilisateur avant de la
+  // stocker (sinon des photos pleine résolution feraient exploser le stockage).
+  function resizeImageFile(file, maxWidth, callback){
+    var reader = new FileReader();
+    reader.onload = function(evt){
+      var img = new Image();
+      img.onload = function(){
+        var scale = Math.min(1, maxWidth / img.width);
+        var w = Math.max(1, Math.round(img.width * scale));
+        var h = Math.max(1, Math.round(img.height * scale));
+        var canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        callback(canvas.toDataURL("image/jpeg", 0.72));
+      };
+      img.onerror = function(){ showToast("Impossible de lire cette image."); };
+      img.src = evt.target.result;
+    };
+    reader.onerror = function(){ showToast("Impossible de lire cette image."); };
+    reader.readAsDataURL(file);
+  }
+
   // Certaines fiches (Google Books notamment) séparent le titre de la série
   // et le sous-titre du tome en deux champs distincts. On les recombine ici
   // pour obtenir "Série : sous-titre", cohérent avec le regroupement par série.
@@ -1141,12 +1189,24 @@
     var coverPreview = coverEl({title: title, cover: cover}, 60);
     card.appendChild(coverPreview);
 
+    function updateCoverPreview(newCover){
+      cover = newCover;
+      var newPreview = coverEl({title: document.getElementById("ac-title").value || title, cover: cover}, 60);
+      card.replaceChild(newPreview, coverPreview);
+      coverPreview = newPreview;
+    }
+
     var fields = document.createElement("div");
     fields.className = "result-fields";
     fields.innerHTML =
       (found ? "" : '<div style="font-size:12px;color:var(--ink-soft);margin-bottom:2px;">Livre non trouvé automatiquement — tape le titre pour voir des suggestions.</div>') +
       '<div><span class="field-label">Titre</span><input class="field-input" id="ac-title" value="' + escapeHtml(title) + '"></div>' +
       '<div><span class="field-label">Auteur</span><input class="field-input" id="ac-author" value="' + escapeHtml(author) + '"></div>' +
+      '<div><span class="field-label">Couverture</span><div class="cover-editor-controls">' +
+        '<label class="cover-upload-btn" for="ac-cover-file">Choisir une photo</label>' +
+        '<input type="file" id="ac-cover-file" accept="image/*" hidden>' +
+        '<input type="text" id="ac-cover-url" class="field-input" placeholder="ou colle un lien d\'image" value="' + (cover && cover.indexOf("data:") !== 0 ? escapeHtml(cover) : "") + '">' +
+      '</div></div>' +
       '<div class="read-toggle-row"><div class="read-switch" id="ac-read-switch"><button type="button" data-val="unread" class="active">Non lu</button><button type="button" data-val="reading">En cours</button><button type="button" data-val="read">Lu</button></div></div>';
     card.appendChild(fields);
     scanResultEl.appendChild(card);
@@ -1155,11 +1215,21 @@
       document.getElementById("ac-title").value = r.title;
       document.getElementById("ac-author").value = r.author || "";
       if (r.cover){
-        cover = r.cover;
-        var newPreview = coverEl({title: r.title, cover: cover}, 60);
-        card.replaceChild(newPreview, coverPreview);
-        coverPreview = newPreview;
+        updateCoverPreview(r.cover);
+        document.getElementById("ac-cover-url").value = r.cover;
       }
+    });
+
+    document.getElementById("ac-cover-file").addEventListener("change", function(e){
+      var file = e.target.files && e.target.files[0];
+      if (!file) return;
+      resizeImageFile(file, 320, function(dataUrl){
+        document.getElementById("ac-cover-url").value = "";
+        updateCoverPreview(dataUrl);
+      });
+    });
+    document.getElementById("ac-cover-url").addEventListener("input", function(e){
+      updateCoverPreview(e.target.value.trim());
     });
 
     var readVal = "unread";
@@ -1184,6 +1254,7 @@
         isbn: isbn,
         title: document.getElementById("ac-title").value.trim() || "Sans titre",
         author: document.getElementById("ac-author").value.trim(),
+        series: "",
         cover: cover,
         status: readVal,
         loanedTo: "",
@@ -1202,13 +1273,29 @@
   // ---------- Manual add / edit overlay ----------
   var manualOverlay = document.getElementById("manual-overlay");
 
+  function setCoverPreview(url){
+    var el = document.getElementById("m-cover-preview");
+    el.innerHTML = "";
+    if (url){
+      var img = document.createElement("img");
+      img.src = url;
+      img.onerror = function(){ el.innerHTML = ""; el.textContent = initials(document.getElementById("m-title").value); };
+      el.appendChild(img);
+    } else {
+      el.textContent = initials(document.getElementById("m-title").value);
+    }
+  }
+
   function resetManualForm(){
     document.getElementById("m-title").value = "";
     document.getElementById("m-author").value = "";
     document.getElementById("m-series").value = "";
     document.getElementById("m-isbn").value = "";
     document.getElementById("m-loan").value = "";
+    document.getElementById("m-cover-url").value = "";
+    document.getElementById("m-cover-file").value = "";
     manualSelectedCover = "";
+    setCoverPreview("");
     pendingManualStatus = "unread";
     document.querySelectorAll("#m-read-switch button").forEach(function(b){
       b.classList.toggle("active", b.getAttribute("data-val") === "unread");
@@ -1230,7 +1317,10 @@
     document.getElementById("m-series").value = book.series || "";
     document.getElementById("m-isbn").value = book.isbn || "";
     document.getElementById("m-loan").value = book.loanedTo || "";
+    document.getElementById("m-cover-file").value = "";
+    document.getElementById("m-cover-url").value = (book.cover && book.cover.indexOf("data:") !== 0) ? book.cover : "";
     manualSelectedCover = book.cover || "";
+    setCoverPreview(manualSelectedCover);
     pendingManualStatus = book.status || "unread";
     document.querySelectorAll("#m-read-switch button").forEach(function(b){
       b.classList.toggle("active", b.getAttribute("data-val") === pendingManualStatus);
@@ -1239,6 +1329,23 @@
     document.getElementById("m-save").textContent = "Enregistrer les modifications";
     manualOverlay.hidden = false;
   }
+
+  document.getElementById("m-cover-file").addEventListener("change", function(e){
+    var file = e.target.files && e.target.files[0];
+    if (!file) return;
+    resizeImageFile(file, 320, function(dataUrl){
+      manualSelectedCover = dataUrl;
+      document.getElementById("m-cover-url").value = "";
+      setCoverPreview(dataUrl);
+    });
+  });
+  document.getElementById("m-cover-url").addEventListener("input", function(e){
+    manualSelectedCover = e.target.value.trim();
+    setCoverPreview(manualSelectedCover);
+  });
+  document.getElementById("m-title").addEventListener("input", function(){
+    if (!manualSelectedCover) setCoverPreview("");
+  });
 
   document.getElementById("close-manual").addEventListener("click", function(){
     manualOverlay.hidden = true;
@@ -1296,6 +1403,8 @@
     if (r.author) document.getElementById("m-author").value = r.author;
     if (r.isbn) document.getElementById("m-isbn").value = r.isbn;
     manualSelectedCover = r.cover || "";
+    document.getElementById("m-cover-url").value = manualSelectedCover;
+    setCoverPreview(manualSelectedCover);
   });
 
   // ---------- Export ----------
